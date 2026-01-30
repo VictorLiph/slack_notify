@@ -1,72 +1,79 @@
 const SLACK_TOKEN = "XXXX"; 
 
-function monitorarEscala() {
-  var aba = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0]; 
-  var dados = aba.getDataRange().getDisplayValues(); 
-  var agora = new Date();
+function monitorSchedule() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0]; 
+  const data = sheet.getDataRange().getDisplayValues(); 
+  const now = new Date();
   
-  var horaAgora = Utilities.formatDate(agora, "GMT-3", "HH:mm");
-  var partesA = horaAgora.split(":");
-  var minAgora = (parseInt(partesA[0]) * 60) + parseInt(partesA[1]);
+  // Format current time to HH:mm
+  const currentTime = Utilities.formatDate(now, "GMT-3", "HH:mm");
+  const timeParts = currentTime.split(":");
+  const currentMinutes = (parseInt(timeParts[0]) * 60) + parseInt(timeParts[1]);
 
-  console.log("⌚ Verificando escala às: " + horaAgora);
+  console.log("⌚ Checking schedule at: " + currentTime);
 
-  for (var i = 1; i < dados.length; i++) {
-    var nome    = dados[i][0];
-    var email   = dados[i][1];
-    var horario = dados[i][2];
-    var pausa   = dados[i][3];
-    var status  = dados[i][4];
+  // Loop through data starting from the second row (index 1) to skip header
+  for (let i = 1; i < data.length; i++) {
+    const name     = data[i][0];
+    const email    = data[i][1];
+    const shiftTime = data[i][2]; 
+    const breakType = data[i][3];
+    const status    = data[i][4];
 
-    if (!horario || !email || !horario.includes(":")) continue;
+    if (!shiftTime || !email || !shiftTime.includes(":")) continue;
 
     try {
-      var match = horario.match(/(\d{1,2}):(\d{2})/);
+      const match = shiftTime.match(/(\d{1,2}):(\d{2})/);
       if (match) {
-        var minPausa = (parseInt(match[1]) * 60) + parseInt(match[2]);
-        var diff = minPausa - minAgora;
+        const breakMinutes = (parseInt(match[1]) * 60) + parseInt(match[2]);
+        const diff = breakMinutes - currentMinutes;
 
-        // REGRA: Se faltar 5 min E ainda não tiver sido enviado hoje
-        if (diff === 5 && status !== "✅ Enviado") {
-          console.log(`🎯 Disparando para ${nome}...`);
+        // RULE: Trigger if 5 minutes remain AND not already notified today
+        if (diff === 5 && status !== "✅ Sent") {
+          console.log(`🎯 Triggering notification for ${name}...`);
           
-          // Tenta enviar e guarda o resultado
-          var sucesso = enviarDM(email, nome, pausa);
+          const success = sendSlackDM(email, name, breakType);
           
-          if (sucesso) {
-            aba.getRange(i + 1, 5).setValue("✅ Enviado às " + horaAgora);
-            aba.getRange(i + 1, 5).setBackground("#d9ead3");
+          if (success) {
+            // Write status to Column E (5th column)
+            sheet.getRange(i + 1, 5).setValue("✅ Sent at " + currentTime);
+            sheet.getRange(i + 1, 5).setBackground("#d9ead3"); // Light green
           } else {
-            aba.getRange(i + 1, 5).setValue("❌ Erro no Slack");
-            aba.getRange(i + 1, 5).setBackground("#f4cccc");
+            sheet.getRange(i + 1, 5).setValue("❌ Slack Error");
+            sheet.getRange(i + 1, 5).setBackground("#f4cccc"); // Light red
           }
         }
       }
     } catch(e) {
-      console.log("Erro no agente " + nome + ": " + e.message);
+      console.log(`Error processing agent ${name}: ${e.message}`);
     }
   }
 }
 
-function enviarDM(email, nome, pausa) {
+/**
+ * Handles the Slack API calls to find the user and post the message.
+ */
+function sendSlackDM(email, name, breakType) {
   try {
-    var emailLimpo = email.trim();
-    var res = UrlFetchApp.fetch("https://slack.com/api/users.lookupByEmail?email=" + encodeURIComponent(emailLimpo), {
+    const cleanEmail = email.trim();
+    const lookupUrl = "https://slack.com/api/users.lookupByEmail?email=" + encodeURIComponent(cleanEmail);
+    
+    const response = UrlFetchApp.fetch(lookupUrl, {
       "method": "get",
       "headers": {"Authorization": "Bearer " + SLACK_TOKEN},
       "muteHttpExceptions": true
     });
     
-    var userJson = JSON.parse(res.getContentText());
+    const userData = JSON.parse(response.getContentText());
 
-    if (userJson.ok) {
-      var userId = userJson.user.id;
-      var payload = {
+    if (userData.ok) {
+      const userId = userData.user.id;
+      const payload = {
         "channel": userId,
-        "text": `🔔 *Oi ${nome}!* Sua pausa de *${pausa}* começa em 5 minutos.`
+        "text": `🔔 *Hey ${name}!* Your *${breakType}* starts in 5 minutes.`
       };
       
-      var resMsg = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
+      const postResponse = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
         "method": "post",
         "contentType": "application/json",
         "headers": {"Authorization": "Bearer " + SLACK_TOKEN},
@@ -74,10 +81,25 @@ function enviarDM(email, nome, pausa) {
         "muteHttpExceptions": true
       });
       
-      return JSON.parse(resMsg.getContentText()).ok; 
+      return JSON.parse(postResponse.getContentText()).ok;
     }
     return false;
   } catch (e) {
+    console.log("Technical Error: " + e.toString());
     return false;
+  }
+}
+
+/**
+ * Resets the status column for a new day.
+ */
+function clearStatusColumn() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
+  const lastRow = sheet.getLastRow();
+  
+  if (lastRow > 1) {
+    const range = sheet.getRange(2, 5, lastRow - 1, 1);
+    range.clearContent();
+    range.setBackground(null);
   }
 }
